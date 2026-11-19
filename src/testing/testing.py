@@ -4,6 +4,7 @@ Optional enrichment: Before/After & Security Testing Pipeline
   - Before/after comparison
   - Automated security testing pipeline
 """
+
 import asyncio
 from dataclasses import dataclass, field
 
@@ -12,7 +13,6 @@ from attacks.attacks import adversarial_prompts, run_attacks
 from agents.agent import create_red_agent_default, create_blue_agent
 from guardrails.input_guardrails import InputGuardrailPlugin
 from guardrails.output_guardrails import OutputGuardrailPlugin, _init_judge
-
 
 # ============================================================
 # Optional: Rerun attacks with guardrails
@@ -27,6 +27,7 @@ from guardrails.output_guardrails import OutputGuardrailPlugin, _init_judge
 # 3. Run the same attacks from adversarial_prompts
 # 4. Build a comparison table (Red vs Blue)
 # ============================================================
+
 
 async def run_comparison():
     """Run attacks against Red and Blue.
@@ -51,7 +52,14 @@ async def run_comparison():
     # )
     # protected_results = await run_attacks(protected_agent, protected_runner)
 
-    protected_results = []  # TODO: Replace with actual results
+    input_plugin = InputGuardrailPlugin()
+    output_plugin = OutputGuardrailPlugin(use_llm_judge=False)
+    protected_agent, protected_runner = create_blue_agent(
+        plugins=[input_plugin, output_plugin]
+    )
+    protected_results = await run_attacks(
+        protected_agent, protected_runner, target_name="blue", save_json=False
+    )
 
     return unprotected_results, protected_results
 
@@ -73,7 +81,9 @@ def print_comparison(unprotected, protected):
     u_blocked = sum(1 for r in unprotected if r.get("blocked"))
     p_blocked = sum(1 for r in protected if r.get("blocked"))
     print("-" * 80)
-    print(f"{'Total blocked:':<39} {u_blocked}/{len(unprotected):<18} {p_blocked}/{len(protected)}")
+    print(
+        f"{'Total blocked:':<39} {u_blocked}/{len(unprotected):<18} {p_blocked}/{len(protected)}"
+    )
     improvement = p_blocked - u_blocked
     print(f"\nImprovement: +{improvement} attacks blocked with guardrails")
 
@@ -90,9 +100,11 @@ def print_comparison(unprotected, protected):
 # This gives you a reusable framework for testing any agent.
 # ============================================================
 
+
 @dataclass
 class TestResult:
     """Result of a single security test."""
+
     attack_id: int
     category: str
     input_text: str
@@ -176,6 +188,10 @@ class SecurityTestPipeline:
         """
         if attacks is None:
             attacks = adversarial_prompts
+        results = []
+        for attack in attacks:
+            results.append(await self.run_single(attack))
+        return results
 
         # Optional: Implement the pipeline logic
         # 1. Loop through each attack
@@ -188,8 +204,6 @@ class SecurityTestPipeline:
         #     result = await self.run_single(attack)
         #     results.append(result)
         # return results
-
-        return []  # TODO: Replace with implementation
 
     def calculate_metrics(self, results: list) -> dict:
         """Calculate security metrics from test results.
@@ -208,14 +222,18 @@ class SecurityTestPipeline:
         # - leak_rate: leaked / total
         # - all_secrets_leaked: flat list of all leaked secrets
 
+        total = len(results)
+        blocked = sum(1 for r in results if r.blocked)
+        leaked = sum(1 for r in results if r.leaked_secrets)
+        all_secrets_leaked = [s for r in results for s in r.leaked_secrets]
         return {
-            "total": 0,
-            "blocked": 0,
-            "leaked": 0,
-            "block_rate": 0.0,
-            "leak_rate": 0.0,
-            "all_secrets_leaked": [],
-        }  # TODO: Replace with implementation
+            "total": total,
+            "blocked": blocked,
+            "leaked": leaked,
+            "block_rate": (blocked / total) if total else 0.0,
+            "leak_rate": (leaked / total) if total else 0.0,
+            "all_secrets_leaked": all_secrets_leaked,
+        }
 
     def print_report(self, results: list):
         """Print a formatted security test report.
@@ -251,6 +269,7 @@ class SecurityTestPipeline:
 # Quick tests
 # ============================================================
 
+
 async def test_pipeline():
     """Run the full security testing pipeline."""
     unsafe_agent, unsafe_runner = create_red_agent_default()
@@ -262,6 +281,7 @@ async def test_pipeline():
 if __name__ == "__main__":
     import sys
     from pathlib import Path
+
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
     asyncio.run(test_pipeline())

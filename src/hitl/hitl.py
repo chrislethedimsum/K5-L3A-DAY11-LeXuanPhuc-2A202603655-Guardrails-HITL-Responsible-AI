@@ -57,42 +57,40 @@ class ConfidenceRouter:
 
     def route(self, response: str, confidence: float,
               action_type: str = "general") -> RoutingDecision:
-        """Route a response based on confidence score and action type.
+        if action_type in HIGH_RISK_ACTIONS:
+            return RoutingDecision(
+                action="escalate",
+                confidence=confidence,
+                reason=f"High-risk action: {action_type}",
+                priority="high",
+                requires_human=True,
+            )
 
-        Args:
-            response: The agent's response text
-            confidence: Confidence score between 0.0 and 1.0
-            action_type: Type of action (e.g., "general", "transfer_money")
+        if confidence >= self.HIGH_THRESHOLD:
+            return RoutingDecision(
+                action="auto_send",
+                confidence=confidence,
+                reason="High confidence",
+                priority="low",
+                requires_human=False,
+            )
 
-        Returns:
-            RoutingDecision with routing action and metadata
-        """
-        # Optional: Implement routing logic
-        #
-        # 1. Check if action_type is in HIGH_RISK_ACTIONS
-        #    -> If yes: always escalate (action="escalate", priority="high",
-        #       requires_human=True, reason="High-risk action: {action_type}")
-        #
-        # 2. Check confidence thresholds:
-        #    - confidence >= 0.9:
-        #      action="auto_send", priority="low",
-        #      requires_human=False, reason="High confidence"
-        #
-        #    - 0.7 <= confidence < 0.9:
-        #      action="queue_review", priority="normal",
-        #      requires_human=True, reason="Medium confidence — needs review"
-        #
-        #    - confidence < 0.7:
-        #      action="escalate", priority="high",
-        #      requires_human=True, reason="Low confidence — escalating"
+        if confidence >= self.MEDIUM_THRESHOLD:
+            return RoutingDecision(
+                action="queue_review",
+                confidence=confidence,
+                reason="Medium confidence — needs review",
+                priority="normal",
+                requires_human=True,
+            )
 
         return RoutingDecision(
-            action="auto_send",
+            action="escalate",
             confidence=confidence,
-            reason="TODO: implement routing logic",
-            priority="low",
-            requires_human=False,
-        )  # TODO: Replace with implementation
+            reason="Low confidence — escalating",
+            priority="high",
+            requires_human=True,
+        )
 
 
 # ============================================================
@@ -115,33 +113,33 @@ class ConfidenceRouter:
 hitl_decision_points = [
     {
         "id": 1,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
-        "approval_path": "TODO: Explain approve, reject and timeout behavior",
-        "audit_fields": "TODO: List correlation ID, intent, diff and reviewer decision",
+        "name": "High-Value or External Fund Transfer",
+        "trigger": "action_type == 'transfer_money' or amount >= 50_000_000 VND",
+        "hitl_model": "human-in-the-loop",
+        "context_needed": "Customer ID, source/destination account, amount, transfer purpose, fraud risk score",
+        "example": "Customer asks assistant to transfer 120,000,000 VND to a newly added beneficiary.",
+        "approval_path": "Approve -> execute transfer with approval_id; Reject -> cancel and notify; Timeout (15m) -> auto-reject (fail-closed).",
+        "audit_fields": "correlation_id, user_id, intent, payload_diff, reviewer_id, decision, timestamp",
     },
     {
         "id": 2,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
-        "approval_path": "TODO: Explain approve, reject and timeout behavior",
-        "audit_fields": "TODO: List correlation ID, intent, diff and reviewer decision",
+        "name": "Account Closure or Credential Change",
+        "trigger": "action_type in {'close_account', 'change_password', 'update_personal_info'}",
+        "hitl_model": "human-in-the-loop",
+        "context_needed": "Verified eKYC status, recent login IP/device history, proposed field diff",
+        "example": "User requests updating registered phone number and closing an active savings account.",
+        "approval_path": "Approve -> apply update after OTP/staff sign-off; Reject -> lock change & alert fraud team; Timeout (10m) -> expire request.",
+        "audit_fields": "correlation_id, intent, before_after_diff, reviewer_id, approval_id, decision",
     },
     {
         "id": 3,
-        "name": "TODO: Name this decision point",
-        "trigger": "TODO: When does this trigger?",
-        "hitl_model": "TODO: human-in-the-loop / human-on-the-loop / human-as-tiebreaker",
-        "context_needed": "TODO: What does the reviewer need to see?",
-        "example": "TODO: Give a concrete example scenario",
-        "approval_path": "TODO: Explain approve, reject and timeout behavior",
-        "audit_fields": "TODO: List correlation ID, intent, diff and reviewer decision",
+        "name": "Low-Confidence Policy / Fee Dispute Answer",
+        "trigger": "confidence < 0.9 on complex fee waiver, loan restructuring, or dispute query",
+        "hitl_model": "human-on-the-loop (0.7–0.9) / human-as-tiebreaker (< 0.7)",
+        "context_needed": "Original prompt, draft AI response, confidence score, matched policy clauses",
+        "example": "Customer disputes an international card fee and asks for an exception waiver (confidence = 0.62).",
+        "approval_path": "Approve -> send draft; Edit/Reject -> human agent sends corrected reply; Timeout (30m) -> escalate to senior support.",
+        "audit_fields": "correlation_id, confidence, draft_response, reviewer_id, final_action, latency_ms",
     },
 ]
 

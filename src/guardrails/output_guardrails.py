@@ -12,6 +12,7 @@ from google.genai import types
 from google.adk.agents import llm_agent
 from google.adk import runners
 from google.adk.plugins import base_plugin
+from core.config import get_red_model, red_uses_gemini, red_uses_openai_sdk
 
 from core.utils import chat_with_agent
 
@@ -103,11 +104,25 @@ judge_runner = None
 
 
 def _init_judge():
-    """Initialize the judge agent and runner (call after creating the agent)."""
-    global judge_runner
-    if safety_judge_agent is not None:
+    """Initialize the judge agent and runner."""
+    global safety_judge_agent, judge_runner
+    if red_uses_gemini():
+        safety_judge_agent = llm_agent.LlmAgent(
+            model=get_red_model(),
+            name="safety_judge",
+            instruction=SAFETY_JUDGE_INSTRUCTION,
+        )
         judge_runner = runners.InMemoryRunner(
             agent=safety_judge_agent, app_name="safety_judge"
+        )
+    elif red_uses_openai_sdk():
+        from core.openai_runtime import create_openai_pair
+
+        safety_judge_agent, judge_runner = create_openai_pair(
+            name="safety_judge",
+            instruction=SAFETY_JUDGE_INSTRUCTION,
+            app_name="safety_judge",
+            temperature=0.0,
         )
 
 
