@@ -8,10 +8,12 @@ Status convention (không dùng True/False mơ hồ):
   ``"BLOCK"`` = chặn / không cho qua
   ``"ALLOW"`` = cho qua
 """
+
 from __future__ import annotations
 
 import re
 from typing import Literal
+import unicodedata
 
 from google.genai import types
 from google.adk.plugins import base_plugin
@@ -42,6 +44,7 @@ InputStatus = Literal["ALLOW", "BLOCK"]
 # Regex is one signal, not the whole security boundary.
 # ============================================================
 
+
 def detect_injection(user_input: str) -> InputStatus:
     """Detect prompt injection patterns in user input.
 
@@ -51,14 +54,28 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
+    if not user_input:
+        return "ALLOW"
+
+    # Canonicalize Unicode, strip invisible format chars (e.g. \u200b), and collapse whitespace
+    text = unicodedata.normalize("NFKC", user_input)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    text = re.sub(r"\s+", " ", text).strip()
+
     INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
+        r"ignore\s+(all\s+)?(previous|above|prior)\s+instructions?",
+        r"disregard\s+(all\s+)?(previous|above|prior)\s+instructions?",
+        r"you\s+are\s+now",
+        r"system\s+prompt",
+        r"reveal\s+(your\s+)?(instructions|prompt)",
+        r"pretend\s+(you\s+are|to\s+be)",
+        r"act\s+as\s+(a\s+|an\s+)?unrestricted",
+        r"bypass\s+(all\s+)?(safety|guardrails?|rules?|filters?)",
+        r"forget\s+(everything|all\s+(previous\s+)?instructions?)",
     ]
 
     for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+        if re.search(pattern, text, re.IGNORECASE):
             return "BLOCK"
     return "ALLOW"
 
@@ -74,24 +91,41 @@ def detect_injection(user_input: str) -> InputStatus:
 # Return ``"ALLOW"`` if banking-related and OK.
 # ============================================================
 
+
+def _strip_accents(text: str) -> str:
+    """Chuyển tiếng Việt có dấu thành không dấu để khớp ALLOWED_TOPICS."""
+    text = text.replace("đ", "d").replace("Đ", "D")
+    nfd = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in nfd if unicodedata.category(ch) != "Mn")
+
+
+def _contains_topic(text: str, topics: list[str]) -> bool:
+    """Kiểm tra theo ranh giới từ (tránh khớp nhầm kiểu 'skill' chứa 'kill')."""
+    return any(re.search(rf"\b{re.escape(topic)}\b", text) for topic in topics)
+
+
 def topic_filter(user_input: str) -> InputStatus:
-    """Decide whether the input is on-topic for VinBank.
-
-    Args:
-        user_input: The user's message
-
-    Returns:
-        ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
-        ``"ALLOW"`` = cho qua (câu banking hợp lệ).
-    """
-    input_lower = user_input.lower()
-
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
-
-    pass  # Replace with your implementation
+    """Decide whether the input is on-topic for VinBank."""
+    if not user_input or not user_input.strip():
+        return "BLOCK"
+    # Chuẩn hóa ký tự ẩn + chữ thường + bản không dấu (cho tiếng Việt)
+    cleaned = unicodedata.normalize("NFKC", user_input)
+    cleaned = "".join(ch for ch in cleaned if unicodedata.category(ch) != "Cf")
+    input_lower = re.sub(r"\s+", " ", cleaned).strip().lower()
+    input_ascii = _strip_accents(input_lower)
+    # 1. Chứa topic bị cấm -> BLOCK
+    if _contains_topic(input_lower, BLOCKED_TOPICS) or _contains_topic(
+        input_ascii, BLOCKED_TOPICS
+    ):
+        return "BLOCK"
+    # 2. Không chứa topic ngân hàng hợp lệ nào -> BLOCK
+    if not (
+        _contains_topic(input_lower, ALLOWED_TOPICS)
+        or _contains_topic(input_ascii, ALLOWED_TOPICS)
+    ):
+        return "BLOCK"
+    # 3. Hợp lệ -> ALLOW
+    return "ALLOW"
 
 
 # ============================================================
@@ -104,6 +138,7 @@ def topic_filter(user_input: str) -> InputStatus:
 #   - user_message is types.Content (not str)
 #   - Return types.Content to block, or None to pass through
 # ============================================================
+
 
 class InputGuardrailPlugin(base_plugin.BasePlugin):
     """Plugin that blocks bad input before it reaches the LLM."""
@@ -136,27 +171,32 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         user_message: types.Content,
     ) -> types.Content | None:
         """Check user message before sending to the agent.
-
         Returns:
             None if message is safe (let it through),
             types.Content if message is blocked (return replacement)
         """
         self.total_count += 1
         text = self._extract_text(user_message)
-
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
-
-        pass  # Replace with your implementation
+        # 1. Kiểm tra prompt injection / jailbreak
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I cannot process that request due to security policies."
+            )
+        # 2. Kiểm tra chủ đề ngân hàng
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I'm a VinBank assistant and can only help with banking-related questions."
+            )
+        # 3. Cả hai đều ALLOW -> cho phép đi tiếp tới LLM
+        return None
 
 
 # ============================================================
 # Quick tests
 # ============================================================
+
 
 def test_injection_detection():
     """Test detect_injection with sample inputs."""
@@ -214,9 +254,11 @@ async def test_input_plugin():
 if __name__ == "__main__":
     import sys
     from pathlib import Path
+
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
     test_injection_detection()
     test_topic_filter()
     import asyncio
+
     asyncio.run(test_input_plugin())
